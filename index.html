@@ -851,17 +851,6 @@ function App() {
       if(!resolved.pastPhysical){resolved.pastPhysical=true;checkLoaded();}
     });
 
-    // Seed demo data ONLY if the whole /ielts root does not exist.
-    // Empty categories will stay empty, so deleted records will not come back.
-    db.ref("ielts").once("value", snap => {
-      if (!snap.exists()) {
-        fbSet("online", DEMO_ONLINE);
-        fbSet("physical", DEMO_PHYSICAL);
-        fbSet("pastOnline", DEMO_PAST_ONLINE);
-        fbSet("pastPhysical", DEMO_PAST_PHYSICAL);
-      }
-    });
-
     const connectedRef = db.ref(".info/connected");
     connectedRef.on("value", snap => {
       setSyncStatus(snap.val() ? "on" : "off");
