@@ -103,13 +103,16 @@ function objToArr(obj) {
   return Object.values(obj);
 }
 function fbSet(path, arr) {
-  db.ref("ielts/" + path).set(arrToObj(arr));
+  return db.ref("ielts/" + path).set(arrToObj(arr));
+}
+function fbRemoveStudent(path, id) {
+  return db.ref("ielts/" + path + "/" + id).remove();
 }
 function fbListen(path, callback) {
   const ref = db.ref("ielts/" + path);
   ref.on("value", snap => {
     const val = snap.val();
-    callback(val === null ? null : objToArr(val));
+    callback(objToArr(val));
   });
   return () => ref.off();
 }
@@ -422,7 +425,7 @@ function StudentsTable({students, type, onView, onEdit, onDelete, onMovePast}) {
 }
 
 /* ── STUDENT SECTION ────────────────────────────── */
-function StudentSection({title, icon, type, students, setStudents, setPastStudents, pastStudents, showToast}) {
+function StudentSection({title, icon, type, students, setPastStudents, pastStudents, showToast}) {
   const [search,setSearch]=useState(""); const [fType,setFType]=useState("All");
   const [fBand,setFBand]=useState("All"); const [sortK,setSortK]=useState("dateJoined");
   const [sortD,setSortD]=useState("desc"); const [showForm,setShowForm]=useState(false);
@@ -448,22 +451,47 @@ function StudentSection({title, icon, type, students, setStudents, setPastStuden
     return r;
   },[students,search,fType,fBand,sortK,sortD]);
 
-  const save = s => {
+  const save = async s => {
     let updated;
-    if (editing) { updated=students.map(x=>x.id===s.id?s:x); showToast("Student updated!","success"); }
-    else { updated=[s,...students]; showToast("Student added successfully!","success"); }
-    fbSet(type, updated);  // Firebase listener updates state automatically
-    setShowForm(false); setEditing(null);
+    if (editing) updated=students.map(x=>x.id===s.id?s:x);
+    else updated=[s,...students];
+
+    try {
+      await fbSet(type, updated);
+      showToast(editing ? "Student updated!" : "Student added successfully!", "success");
+      setShowForm(false); setEditing(null);
+    } catch (error) {
+      console.error(error);
+      showToast("Save failed. Check Firebase rules.", "error");
+    }
   };
-  const del = s => setConfirm({msg:`Permanently delete ${s.name}?`,onYes:()=>{
-    fbSet(type, students.filter(x=>x.id!==s.id));  // Firebase listener updates state
-    setViewing(null); setConfirm(null); showToast("Student deleted.","success");
-  }});
-  const move = s => setConfirm({msg:`Move ${s.name} to Past Students?`,onYes:()=>{
-    fbSet(type, students.filter(x=>x.id!==s.id));
-    fbSet(type==="online"?"pastOnline":"pastPhysical", [s,...(pastStudents||[])]);
-    setViewing(null); setConfirm(null); showToast("Moved to Past Students.","success");
-  }});
+
+  const del = s => setConfirm({
+    msg:`Permanently delete ${s.name}?`,
+    onYes: async () => {
+      try {
+        await fbRemoveStudent(type, s.id);
+        setViewing(null); setConfirm(null); showToast("Student deleted.","success");
+      } catch (error) {
+        console.error(error);
+        showToast("Delete failed. Check Firebase rules.", "error");
+      }
+    }
+  });
+
+  const move = s => setConfirm({
+    msg:`Move ${s.name} to Past Students?`,
+    onYes: async () => {
+      try {
+        await fbRemoveStudent(type, s.id);
+        await db.ref("ielts/" + (type==="online"?"pastOnline":"pastPhysical") + "/" + s.id).set(s);
+        setViewing(null); setConfirm(null); showToast("Moved to Past Students.","success");
+      } catch (error) {
+        console.error(error);
+        showToast("Move failed. Check Firebase rules.", "error");
+      }
+    }
+  });
 
   const SS = {padding:"8px 12px",borderRadius:10,border:"2px solid #e0d8cc",fontSize:12,background:"white",outline:"none"};
   return (
@@ -510,8 +538,8 @@ function StudentSection({title, icon, type, students, setStudents, setPastStuden
       {showForm && <StudentForm type={type} student={editing} onSave={save} onClose={()=>{setShowForm(false);setEditing(null);}}/>}
       {viewing && <DetailModal s={viewing} type={type} onClose={()=>setViewing(null)}
         onEdit={()=>{setEditing(viewing);setShowForm(true);setViewing(null);}}
-        onMovePast={()=>move(viewing)} onDelete={()=>del(viewing)}/>}
-      {confirm && <Confirm msg={confirm.msg} onYes={confirm.onYes} onNo={()=>setConfirm(null)}/>}
+        onMovePast={()=>move(viewing)} onDelete={()=>del(viewing)}/>} 
+      {confirm && <Confirm msg={confirm.msg} onYes={confirm.onYes} onNo={()=>setConfirm(null)}/>} 
     </div>
   );
 }
@@ -532,25 +560,34 @@ function PastStudents({pastOnline,setPastOnline,pastPhysical,setPastPhysical,set
   const pages = Math.max(1, Math.ceil(filtered.length/perPage));
   const paged = filtered.slice((page-1)*perPage, page*perPage);
 
-  const restore = s => setConfirm({msg:`Restore ${s.name} to active students?`,onYes:()=>{
-    if (isO) {
-      const updPast=pastOnline.filter(x=>x.id!==s.id);
-      const updActive=[s,...online];
-      setPastOnline(updPast); fbSet("pastOnline",updPast);
-      setOnline(updActive);   fbSet("online",updActive);
-    } else {
-      const updPast=pastPhysical.filter(x=>x.id!==s.id);
-      const updActive=[s,...physical];
-      setPastPhysical(updPast); fbSet("pastPhysical",updPast);
-      setPhysical(updActive);   fbSet("physical",updActive);
+  const restore = s => setConfirm({
+    msg:`Restore ${s.name} to active students?`,
+    onYes: async () => {
+      try {
+        const pastPath = isO ? "pastOnline" : "pastPhysical";
+        const activePath = isO ? "online" : "physical";
+        await fbRemoveStudent(pastPath, s.id);
+        await db.ref("ielts/" + activePath + "/" + s.id).set(s);
+        setConfirm(null); showToast("Student restored!","success");
+      } catch (error) {
+        console.error(error);
+        showToast("Restore failed. Check Firebase rules.", "error");
+      }
     }
-    setConfirm(null); showToast("Student restored!","success");
-  }});
-  const permDel = s => setConfirm({msg:`Permanently delete ${s.name}? This CANNOT be undone.`,onYes:()=>{
-    if (isO) { const u=pastOnline.filter(x=>x.id!==s.id); setPastOnline(u); fbSet("pastOnline",u); }
-    else     { const u=pastPhysical.filter(x=>x.id!==s.id); setPastPhysical(u); fbSet("pastPhysical",u); }
-    setConfirm(null); showToast("Permanently deleted.","success");
-  }});
+  });
+
+  const permDel = s => setConfirm({
+    msg:`Permanently delete ${s.name}? This CANNOT be undone.`,
+    onYes: async () => {
+      try {
+        await fbRemoveStudent(isO ? "pastOnline" : "pastPhysical", s.id);
+        setConfirm(null); showToast("Permanently deleted.","success");
+      } catch (error) {
+        console.error(error);
+        showToast("Delete failed. Check Firebase rules.", "error");
+      }
+    }
+  });
 
   const SS = {padding:"8px 12px",borderRadius:10,border:"2px solid #e0d8cc",fontSize:12,background:"white",outline:"none"};
   return (
@@ -643,7 +680,7 @@ function PastStudents({pastOnline,setPastOnline,pastPhysical,setPastPhysical,set
             style={{padding:"6px 12px",borderRadius:8,border:"2px solid #e0d8cc",background:"white",opacity:page===pages?.4:1}}>→</button>
         </div>
       )}
-      {confirm && <Confirm msg={confirm.msg} onYes={confirm.onYes} onNo={()=>setConfirm(null)}/>}
+      {confirm && <Confirm msg={confirm.msg} onYes={confirm.onYes} onNo={()=>setConfirm(null)}/>} 
     </div>
   );
 }
@@ -764,7 +801,7 @@ function Settings({onReset, showToast, online, physical, pastOnline, pastPhysica
           <p style={{color:GOLD,fontSize:13,fontWeight:700,margin:0}}>✦ Designed by Asad Yaqub</p>
         </div>
       </div>
-      {confirm && <Confirm msg={confirm.msg} onYes={confirm.onYes} onNo={()=>setConfirm(null)}/>}
+      {confirm && <Confirm msg={confirm.msg} onYes={confirm.onYes} onNo={()=>setConfirm(null)}/>} 
     </div>
   );
 }
@@ -796,14 +833,28 @@ function App() {
     function checkLoaded() {
       if (Object.values(resolved).every(Boolean)) { setLoaded(true); setSyncStatus("on"); }
     }
-    const off1 = fbListen("online",       data => { setOnline(data||DEMO_ONLINE);         if(!resolved.online){resolved.online=true;checkLoaded();} });
-    const off2 = fbListen("physical",     data => { setPhysical(data||DEMO_PHYSICAL);     if(!resolved.physical){resolved.physical=true;checkLoaded();} });
-    const off3 = fbListen("pastOnline",   data => { setPastOnline(data||DEMO_PAST_ONLINE); if(!resolved.pastOnline){resolved.pastOnline=true;checkLoaded();} });
-    const off4 = fbListen("pastPhysical", data => { setPastPhysical(data||DEMO_PAST_PHYSICAL); if(!resolved.pastPhysical){resolved.pastPhysical=true;checkLoaded();} });
 
-    // Seed demo data on very first load if Firebase is empty
+    const off1 = fbListen("online", data => {
+      setOnline(data || []);
+      if(!resolved.online){resolved.online=true;checkLoaded();}
+    });
+    const off2 = fbListen("physical", data => {
+      setPhysical(data || []);
+      if(!resolved.physical){resolved.physical=true;checkLoaded();}
+    });
+    const off3 = fbListen("pastOnline", data => {
+      setPastOnline(data || []);
+      if(!resolved.pastOnline){resolved.pastOnline=true;checkLoaded();}
+    });
+    const off4 = fbListen("pastPhysical", data => {
+      setPastPhysical(data || []);
+      if(!resolved.pastPhysical){resolved.pastPhysical=true;checkLoaded();}
+    });
+
+    // Seed demo data ONLY if the whole /ielts root does not exist.
+    // Empty categories will stay empty, so deleted records will not come back.
     db.ref("ielts").once("value", snap => {
-      if (!snap.val()) {
+      if (!snap.exists()) {
         fbSet("online", DEMO_ONLINE);
         fbSet("physical", DEMO_PHYSICAL);
         fbSet("pastOnline", DEMO_PAST_ONLINE);
@@ -811,20 +862,21 @@ function App() {
       }
     });
 
-    db.ref(".info/connected").on("value", snap => {
+    const connectedRef = db.ref(".info/connected");
+    connectedRef.on("value", snap => {
       setSyncStatus(snap.val() ? "on" : "off");
     });
 
-    return () => { off1(); off2(); off3(); off4(); };
+    return () => { off1(); off2(); off3(); off4(); connectedRef.off(); };
   }, []);
 
   const showToast = (message, type="success") => setToast({message, type});
 
   const reset = () => {
-    setOnline(DEMO_ONLINE);             fbSet("online", DEMO_ONLINE);
-    setPhysical(DEMO_PHYSICAL);         fbSet("physical", DEMO_PHYSICAL);
-    setPastOnline(DEMO_PAST_ONLINE);    fbSet("pastOnline", DEMO_PAST_ONLINE);
-    setPastPhysical(DEMO_PAST_PHYSICAL);fbSet("pastPhysical", DEMO_PAST_PHYSICAL);
+    fbSet("online", DEMO_ONLINE);
+    fbSet("physical", DEMO_PHYSICAL);
+    fbSet("pastOnline", DEMO_PAST_ONLINE);
+    fbSet("pastPhysical", DEMO_PAST_PHYSICAL);
   };
 
   if (!loggedIn) return <Login onLogin={()=>setLoggedIn(true)}/>;
@@ -844,8 +896,8 @@ function App() {
   const renderView = () => {
     switch(view) {
       case "dashboard": return <Dashboard online={online} physical={physical} pastOnline={pastOnline} pastPhysical={pastPhysical}/>;
-      case "online":    return <StudentSection title="Online Students" icon="🌐" type="online" students={online} setStudents={setOnline} setPastStudents={setPastOnline} pastStudents={pastOnline} showToast={showToast}/>;
-      case "physical":  return <StudentSection title="Physical / In-Campus Students" icon="🏫" type="physical" students={physical} setStudents={setPhysical} setPastStudents={setPastPhysical} pastStudents={pastPhysical} showToast={showToast}/>;
+      case "online":    return <StudentSection title="Online Students" icon="🌐" type="online" students={online} setPastStudents={setPastOnline} pastStudents={pastOnline} showToast={showToast}/>;
+      case "physical":  return <StudentSection title="Physical / In-Campus Students" icon="🏫" type="physical" students={physical} setPastStudents={setPastPhysical} pastStudents={pastPhysical} showToast={showToast}/>;
       case "past":      return <PastStudents pastOnline={pastOnline} setPastOnline={setPastOnline} pastPhysical={pastPhysical} setPastPhysical={setPastPhysical} setOnline={setOnline} setPhysical={setPhysical} online={online} physical={physical} showToast={showToast}/>;
       case "settings":  return <Settings onReset={reset} showToast={showToast} online={online} physical={physical} pastOnline={pastOnline} pastPhysical={pastPhysical}/>;
     }
@@ -928,7 +980,7 @@ function App() {
           {renderView()}
         </main>
       </div>
-      {toast && <Toast toast={toast} onDone={()=>setToast(null)}/>}
+      {toast && <Toast toast={toast} onDone={()=>setToast(null)}/>} 
       <style>{`
         @media (max-width: 768px) {
           .desktop-sidebar { display: none !important; }
