@@ -452,19 +452,16 @@ function StudentSection({title, icon, type, students, setStudents, setPastStuden
     let updated;
     if (editing) { updated=students.map(x=>x.id===s.id?s:x); showToast("Student updated!","success"); }
     else { updated=[s,...students]; showToast("Student added successfully!","success"); }
-    setStudents(updated); fbSet(type, updated);
+    fbSet(type, updated);  // Firebase listener updates state automatically
     setShowForm(false); setEditing(null);
   };
   const del = s => setConfirm({msg:`Permanently delete ${s.name}?`,onYes:()=>{
-    const updated=students.filter(x=>x.id!==s.id);
-    setStudents(updated); fbSet(type, updated);
+    fbSet(type, students.filter(x=>x.id!==s.id));  // Firebase listener updates state
     setViewing(null); setConfirm(null); showToast("Student deleted.","success");
   }});
   const move = s => setConfirm({msg:`Move ${s.name} to Past Students?`,onYes:()=>{
-    const updActive=students.filter(x=>x.id!==s.id);
-    const updPast=[s,...(pastStudents||[])];
-    setStudents(updActive); fbSet(type, updActive);
-    setPastStudents(updPast); fbSet(type==="online"?"pastOnline":"pastPhysical", updPast);
+    fbSet(type, students.filter(x=>x.id!==s.id));
+    fbSet(type==="online"?"pastOnline":"pastPhysical", [s,...(pastStudents||[])]);
     setViewing(null); setConfirm(null); showToast("Moved to Past Students.","success");
   }});
 
